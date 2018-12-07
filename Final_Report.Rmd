@@ -1,0 +1,430 @@
+---
+title: 'LOL computation: What can Roles do with more gold?'
+author: "Siwei Hu"
+date: "December 2, 2018"
+output:
+    pdf_document: default
+header-includes:
+- \usepackage{setspace}
+- \onehalfspacing
+fontsize: 12pt
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(tidyverse)
+library(reshape2)
+library(VGAM)
+library(lme4)
+library(arm)
+library(ggpubr)
+library(caret)
+library(glmnet)
+```
+
+#Abstract: 
+
+In League of Legend competition, there exists too much variables which can impact the result of one game. In this project, I want to research about how gold difference of each roles from two sides will affect the result of the game. I decide to use logistic regression model and interpret the coefficient of five roles' gold difference. I am also interested in building a multilevel logistic regression model using Team or League as level.Statistic transformation will be helpful in this project. After building the model, I will check it with binned residual plot and prediction. 
+
+#Introduction: 
+
+##I. Background:
+
+###LOL Game Map:
+
+!["GameMap"]("LOLMap")
+
+League of Legends (aka LOL) is a multiplayer online battle arena video game. 
+
+Area in Map: From the Map we can see there are two side of base and three main lanes. Except these lanes and base, map has a lot of jungle regions where is the home of monsters. (as shown Figure 1)
+
+Roles: The circles on the Map shows different roles in each team. They are Attack Damage Carry(abb.ADC), Middle, Top, Jungle and Support. ADC and Support both called Bot. (as shown Figure 1)
+
+Process: During the Competition, players will keep farming to earn gold to buy their weapon. Besides farming, some solo fights and team fights will happen to help team build gold difference. 
+
+##II. Previous Work:
+
+###i. Data source
+The raw data has 7620 competition from 242 game clubs and 15 Leagues. The raw data has 6 different datasets. 
+Here are two dataset i used in my project:
+
+LOL: the information of Teams,Year,Gamelength,Result ,Leagues and etc.
+
+Gold: Each minutes gold change in each game. It has types includes 
+
+  1.golddiff : gold difference between two team
+     
+  2.golddADC : gold difference between two team's **ADC** role
+     
+  3.golddSupport : gold difference between two team's **Support** role
+     
+  4.golddMiddle : gold difference between two team's **Middle** role
+     
+  5.golddTop : gold difference between two team's **Top** role
+     
+  6.golddMiddle : gold difference between two team's **Middle** role
+
+###ii. Data cleaning
+LOL: 
+  LOL dataset includes many background information. 
+  Select League,Year,Season,Type,blueTeamTa,
+  bResult,rResult,redTeamTag,gamelength.
+
+Gold part: 
+  Cleaned Gold data with deleting the NA cells and then rowsum each           min to see the final gold. Calculated max gold difference between two teams and gold difference between each roles.  
+
+Monster part: 
+  Use number of blue team monster - red team monster to get monsterdiff. Sum different type dragons into Dragon column. 
+
+Structure part: 
+  Calculate how many different turrets blue team and red team get.
+  
+'data cleaning for LOL.R' includes data cleaning work. Write out 'LOL.all.csv' to include all variables i need.
+```{r load data, echo=FALSE, warning = FALSE,message=FALSE}
+LOL.all <- read_csv("LOL.all.csv")
+```
+
+###iii. EDA:
+
+Plot 1: 
+Since there exist huge standard error at the beginning and end, we can only pay attention to middle part, like from 25 minutes to 45 minutes. According to this data set, the win rate becomes lower with longer gamelength. In conclusion, the coefficient of gamelength to Result should be very small.
+
+```{r gamlength vs win rate, echo=FALSE}
+ggplot(data = LOL.all,aes(x = gamelength, y = bResult))+ geom_jitter(alpha = 0.3) +  geom_smooth(method = "glm", method.args = list(family = "binomial"),formula = y~x) + xlab("Gamelength") + ylab("Win Rate of Blue Team") + ggtitle("How Gamelength affect the Competition (Plot.1)") + theme(axis.title = element_text(size = 13))
+
+```
+
+
+
+Plot2: 
+
+1. The most significant difference displayed in Support role. The gold difference of Support roles keep comparatively low. In most competition, it's from -3000 to 3000. The gold difference of Support should be high correlative to that of ADC because they are in same lane.
+
+2. The distributions of gold difference for ADC,TOP and Middle are kind similar which make sense because each of them do farming in their own lane. So these three predictors have lower correlation between each other.
+
+3. Jungle distribution is between Support and Other three. First, this role have jungle region resource but need to share with three main lanes. Second, Jungle always run to different lane to help their teammate, however, it's hard to say will win or not. So Jungle has lower farming ability than roles in main lanes. 
+However, its gold difference may have correlation with other three lanes.
+
+4. All plots show that higher gold difference have higher win rate. So their coefficient should all be positive.
+
+```{r win vs gold difference,echo=FALSE}
+
+Discrete.gold <- LOL.all %>% dplyr::select(ADCdiff,Supportdiff,Junglediff,Middlediff,Topdiff,bResult)
+
+Discrete.gold$bResult <- as.character(LOL.all$bResult)
+
+Discrete.gold$ADC <- 
+cut(LOL.all$ADCdiff,c(-Inf,-4000,-3000,-2000,-1000,0,1000,2000,3000,4000,Inf),labels = c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5")) 
+Discrete.gold$Support <- cut(LOL.all$Supportdiff,c(-Inf,-4000,-3000,-2000,-1000,0,1000,2000,3000,4000,Inf),labels = c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5"))
+Discrete.gold$Jungle <- cut(LOL.all$Junglediff,c(-Inf,-4000,-3000,-2000,-1000,0,1000,2000,3000,4000,Inf),labels = c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5"))
+Discrete.gold$Middle<- cut(LOL.all$Middlediff,c(-Inf,-4000,-3000,-2000,-1000,0,1000,2000,3000,4000,Inf),labels = c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5"))
+Discrete.gold$Top <- cut(LOL.all$Topdiff,c(-Inf,-4000,-3000,-2000,-1000,0,1000,2000,3000,4000,Inf),labels = c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5")) 
+
+Discrete <- gather(Discrete.gold, key = roles, value = gold, ADC:Top) 
+
+Discrete <- filter(Discrete,gold !="-INF"| gold !="INF")
+
+position <-  c("-4.5","-3.5","-2.5","-1.5","-0.5","0.5","1.5","2.5","3.5","4.5")
+ggplot(Discrete) + geom_bar(aes(x = gold, fill = bResult),position = "stack") +facet_wrap(~roles)+ ggtitle("Win rate vs gold difference(plot2)") +xlab("Gold Difference(per thousand)")+ ylab("Number of Competition") + scale_x_discrete(limits = position) +theme(axis.text.x = element_text(angle = 45,face = "bold",lineheight = 1,size = 10), axis.title.x = element_text(size = 15),axis.title.y = element_text(size = 15) )
+
+```
+
+Plot3:
+From plot, we found Supportdiff and Junglediff both have high correlation to other three predictors. This make sense because these two Roles keep moving and try to gank three main lanes in the game.
+
+For this project, I know the predictors in a game definitely have some correlations between each other. But I don't know how this affect my model and I will try to test it.
+
+```{r correlation heatmap plot,echo=FALSE}
+#correlation Plot
+cor.lol <- LOL.all%>% dplyr::select(ADCdiff,Supportdiff,Junglediff,Middlediff,Topdiff)
+
+lol.cor <- round(cor(cor.lol),2)
+head(lol.cor)
+m.cor <- melt(lol.cor)
+head(m.cor)
+
+ggplot(data = m.cor, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()+ scale_fill_continuous(trans = 'reverse') + xlab("Roles") + ylab("Roles")+ ggtitle("The Correlation between predictors(plot3)")+ theme(axis.text.x = element_text(size = 10),axis.text.y = element_text(size = 10))
+```
+
+#Method:
+
+##I. Model used
+I choose logistic regression model(binomial). The main reason is the outcome of project is win or not(1 or 0) which is  binomial. 
+
+Then try no pooling and partial pooling to see how group: League affects the binomial logistic regression model. 
+
+##II. Modle Selection:
+
+###* complete pooling model:
+
+Model1: 
+The coefficients of model1 are all too small. Reason is that the predictors are large numbers. So Use statistic scale to solve this problem.
+
+```{r model1}
+train=(LOL.all$Year < 2017)
+LOL.after <- LOL.all[!train,]
+
+model1 <- glm(bResult ~ gamelength + ADCdiff + Middlediff + Topdiff +
+                        Junglediff + Supportdiff, 
+              family = binomial(link = "logit"), 
+              data = LOL.all, subset = train)
+coefplot(model1)
+```
+
+###* Scaling Model:
+
+Model2: 
+After doing scaling, now the coefficient can easier to understand. With each 1000 gold difference increase, we can see the influence on the game result from each role.
+
+Coefficients in model2 are all significant and the Residual Deviance has reduced by 8963.4, a significant reduction in deviance, with a loss of six degrees of freedom. This mean add six predictors in the model increase goodness of fit of a generalized linear model.
+
+```{r model2}
+
+model2 <- glm(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+                c.Topdiff + c.Junglediff+ c.Supportdiff, 
+              family = binomial(link = "logit"), data = LOL.all)
+
+summary(model2)
+```
+
+###* no pooling model:
+  Used League to do no pooling model, the coefficients of factors are all not significant. After comparing AIC of two model, i found model3 produces a probability distribution with the bigger discrepancy from the true distribution than model4.
+```{r model3}
+
+model3 <- glm(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+                c.Topdiff + c.Junglediff+ c.Supportdiff + 
+                factor(League)-1, 
+              family = binomial(link = "logit"), data = LOL.all)
+
+AIC(model2,model3)
+```
+
+###* partial pooling with random intercept:
+Used League as group and 'glmer' function to build multilevel logistic regression model. From 'summary', the variance in random effect shows 0 which means there is no random effect. So model4 is same as a complete pooling model. 
+
+```{r model4,warning=FALSE,message = FALSE}
+
+model4 <- glmer(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+                  c.Topdiff + c.Junglediff+ c.Supportdiff + 
+                  (1|League), 
+                family = binomial(link = "logit"), data = LOL.all)
+display(model4)
+
+```
+
+###* partial pooling with Random intercept and Random Slope:
+
+Used League as group and 'glmer' function to build multilevel logistic regression model with varying slope and intercept. From 'summary', the variance in random effect shows number close to 0 which means there is nearly no random effect.
+
+From Anova result of three multilevel logistic regression model,model5 shows same AIC number as model4 and 0 chi-sq value compare to model4. They are almost same. 
+
+model6 display a higher AIC and BIC compare to model4, which may produces a probability distribution with the bigger discrepancy from the true distribution than model4. 
+
+Actually, Multilevel model perform not well in this project. Although League or Team can be group level to do Mutilevel model,they are all top players of this game. So the influence from levels is not significant.
+
+Finally, after Comparing their AIC and chi-square value, i think model2 is the model i want to select. Then I will check how well it is and interprete it.
+
+```{r model5&6}
+model5 <- glmer(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+                  c.Topdiff + c.Junglediff+ c.Supportdiff + 
+                  (1 + gamelength|League), 
+                family = binomial(link = "logit"), data = LOL.all)
+
+model6 <- glmer(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+                  c.Topdiff + c.Junglediff+ c.Supportdiff + 
+                  (1 + c.ADCdiff+ c.Middlediff + c.Topdiff + 
+                     c.Junglediff+ c.Supportdiff|League), 
+                family = binomial(link = "logit"), data = LOL.all)
+
+anova(model4,model5,model6,model2,model3)
+```
+
+#Result:
+
+```{r Selected Model}
+model <- glm(bResult ~ gamelength + c.ADCdiff + c.Middlediff + 
+               c.Topdiff + c.Junglediff+ c.Supportdiff, 
+             family = binomial(link = "logit"), 
+             data = LOL.all,subset = train)
+par(mfrow=c(1,2),oma = c(1.5,0.5,1,0.5))
+coefplot(model)
+hist(fitted(model,type = "response"),main = "LOL Result Distribution",xlab = "Blue Team Result")
+```
+
+##I. Interprete:
+
+The formula is 
+   $result = logit^{-1} (-0.85 +0.027*gamelength + 0.69*c.ADCdiff +0.55*c.Middlediff+0.5*c.Topdiff+ 0.31*c.Junglediff + 0.76*c.Supportdiff$
+
+The coefficient of this formula:
+   
+   **Gamelength**: With one more minutes,the blue team will increase nearly 0.53% win rate
+   
+   **ADCdiff** : The blue team 's ADC earn 1000 gold more than  the red team's ADC,  the blue team will increase 17.3% win rate.
+   
+   **Supportdiff** : The blue team 's Support earn 1000 gold more than  the red team's Support, the blue team will increase 19% win rate.
+   
+   **Middlediff** : The blue team 's Middle earn 1000 gold more than  the red team's Middle, the blue team will increase 13.7% win rate.
+   
+   **Topdiff** : The blue team 's Top earn 1000 gold more than the red team's Top, the blue team will increase 12.3% win rate.
+   
+   **Junglediff** : The blue team 's Jungle earn 1000 gold more than  the red team's Jungle, the blue team will increase 7.8% win rate.
+
+##II. Model Check:
+
+###i. Fitted vs Residual plot and Binned residual plot.
+
+The fitted vs residual plot show good result which upper part show lower residual, fitted value closer to 1 and down part show lower residual, fitted value closer to 0. 
+
+The binned plot is also good. Points are almost in the 2*se range of average residual. The reason most of them cluster at Expect value equal to 0 and 1 is the results of logistic regression are binary. 
+
+```{r fitted and residual plot, echo = FALSE}
+display(model)
+
+par(mfrow=c(1,2))
+plot(fitted(model),resid(model)); abline(h=0,lty = 3)
+binnedplot(fitted(model,type = "response"),resid(model,type="response"))
+```
+
+###ii. Prediction using testset
+i split data into train set and test set. Use test set to do prediction for checking model.
+
+The result of accuracy is nearly 96% which is very high for prediction. This means model works well on inference.
+```{r prediction check, echo = FALSE}
+glm.probs=predict(model,LOL.after,type="response")
+
+glm.pred=rep(0,3552)
+glm.pred[glm.probs>.5]= 1
+table(glm.pred,LOL.after$bResult)
+data.frame(
+  Predict.probs = mean(glm.pred == LOL.after$bResult),
+  RMSE = RMSE(glm.pred, LOL.after$bResult),
+  R2 = R2(glm.pred, LOL.after$bResult))  
+```
+
+###iii. Variance Inflation Function
+From plot3, I know there exist high correlation among five golddiff predictors. So i try to use variance inflation function to check the influence of their correlation to the model.
+
+The result of 'VIF' function: all six predictions are closer to 1 which means the model are not affected by Multicollinearity problem. 
+```{r variance inflation function, echo = FALSE}
+car::vif(model)
+
+```
+
+###iv. Ridge regularisation using glmnet
+
+Use 'cv.glmnet' function and traindata to do ridge regularization, function 'cv.glmnet'automatically select the optimal value of $\lambda$ that minimises error called $\lambda_{min}$.(see plot cv.out) 
+
+But $\lambda_{1se}$, number within 1se of $\lambda_{min}$, is what we’ll use in the rest of the computation. Get coefficient of predictors through 'coefficient' function  to compare with coefficient of predictors in the logistic regression model. Then used testset and $\lambda_{1se}$ to do prediction. Check the accuracy.  
+
+The coefficients of cv.out with $\lambda_{1se}$ are much smaller than that of logistic regression, but Supportdiff still have highest influence on result and Jungle also keep lowest influence on result.
+After used testset to do the predictions, the accuracy is same as that of logistic regression. 
+
+```{r cross-validation for glmnet, echo= FALSE}
+
+modeltrain <- LOL.all[train,] %>% dplyr::select(bResult,gamelength,c.ADCdiff,c.Supportdiff,c.Junglediff,c.Middlediff,c.Topdiff)
+
+#convert training data to matrix format
+x <- model.matrix(bResult~.,modeltrain)
+y <- modeltrain$bResult
+
+#perform grid search to find optimal value of lambda
+#family= binomial => logistic regression, alpha=0 => Ridge
+# check docs to explore other type.measure options
+
+cv.out <- cv.glmnet(x,y,alpha=0,family="binomial",type.measure = "mse" )
+
+lambda_1se <- cv.out$lambda.1se
+coef(cv.out,s=lambda_1se)
+
+#plot result
+plot(cv.out)
+```
+
+```{r prediction for cv.glmnet, echo=FALSE}
+modeltest <- LOL.all[!train,] %>% dplyr::select(bResult,gamelength,c.ADCdiff,c.Supportdiff,c.Junglediff,c.Middlediff,c.Topdiff)
+
+x_test <- model.matrix(bResult~.,modeltest)
+
+ridge_probs=predict(cv.out,newx = x_test,s=lambda_1se,type="response")
+#table of predicted and actual result
+ridge_pred=rep(0,nrow(modeltest))
+ridge_pred[glm.probs>.5]= 1
+table(ridge_pred,modeltest$bResult)
+
+#prediction accuracy
+mean(ridge_pred == modeltest$bResult)
+```
+
+###v. Conclusion from Model check
+The model performs good and can infer the result of competition through its six predictors. There is no multilinearity problem exists in logistic model.
+
+#Discussion:
+
+##I. Implication: 
+At first, I simply thought the coefficients of gold different predictors tell me how each role affects this game if they get 1000 more gold difference. In my opinion, some powerful roles like ADC and Middle should have high coefficients.
+
+However, after I saw Supportdiff Coefficient, I thought there must be something wrong. How could Support affect this game so much if they get 1000 more golddiff? 
+
+After thinking, I know where's my mistake. From Plot2, we know in most of competitions, gold difference of Support are in range -3000~3000. However, gold difference of other roles have much equative possible to be in different intervals(each 1000 golddiff one interval) from -4000~4000. 
+
+In conclusion, generally, Support should be the role get least gold in each competition. If gold difference of Support increase 1000, the whole team gold difference highly possible to increase 5000+, this made higher possibility to "win". So higher coefficients of gold difference of each roles also represented more difficult to increase gold difference. 
+
+##II. Limitation
+The function of this model is doing a inference. If team know these predictors and put them in the model, the model will give a good estimation about result. But if team know about final gold difference, team also should know the result. It is not useful to one team.
+
+##III. Further direction
+###1. Improve model:
+Collect data and add predictor which can evaluate the level of one team. The evaluation of result become fairer. 
+
+###2. Time series model:
+Collect one team's data as much as possible and build time series model to predicte what will happen next minues in game according to their perious one minute's behavior.
+
+
+
+#Reference:
+1. Kaggle Leagle of Legend: https://www.kaggle.com/chuckephron/leagueoflegends
+
+2. LOL Map: http://i1.wp.com/dicerz.co.uk/wp-content/uploads/2014/11/
+Lol-season-5-map-beginners-guide1.png
+
+3. Andrew Gelman Jennifer Hill, Data Analysis using Regression and Multilevel/Hierarchical Models, Cambridge 
+
+4.Model Comparisons , Frederick A.A. Kingdom, Nicolaas Prins, in Psychophysics (Second Edition), 2016
+
+5.Regression Model Diagnostics,Multicollinearity Essentials and VIF in R, kassambara, 11/03/2018
+
+6.Ridge regularisation using R: https://eight2late.wordpress.com/2017/07/11/a-gentle-introduction-to
+-logistic-regression-and-lasso-regularisation-using-r/
+
+#Appendix:
+##1. Role farming ability
+Build a facet.grid for each league. I show different Roles' farming ability in different League.
+
+
+```{r role farming ability, echo=FALSE}
+
+ggplot(data = LOL.all) + geom_boxplot(aes(y= goldblueADC,x = "A")) +geom_boxplot(aes(y= goldblueSupport,x = "S"))+geom_boxplot(aes(y= goldblueMiddle,x = "M"))+geom_boxplot(aes(y= goldblueTop,x = "T"))+geom_boxplot(aes(y= goldblueJungle,x = "J")) + facet_wrap(~League)+xlab("Role") + ylab("Gold") + ggtitle("Different Role's farming ability")
+```
+
+##2. Monster Effect on Gold difference
+Plot 'geom_smooth' and scatter plot to see the influence of dragon and baron before & after the change in jungle field (2017)
+
+
+```{r Monster Effect on Gold difference, echo=FALSE, warning=FALSE,message=FALSE}
+LOL.before <- LOL.all %>% filter(Year < 2017) %>%mutate(year = "Before") %>%  filter(!is.na(blueTeamTag))
+
+LOL.after <- LOL.all %>% filter(Year >=2017) %>% mutate(year= "After") %>% dplyr::select(-Dragondiff) 
+LOL.after$Dragondiff <- rowSums(LOL.after[,52:55])
+LOL.after$b_DRAGON <- rowSums(LOL.after[,c(38,35,40,42)]) 
+LOL.after$r_DRAGON <- rowSums(LOL.after[,c(43,46,48,50)])
+
+LOL.all.new <- bind_rows(LOL.before,LOL.after)
+position <- c("Before","After")
+
+ggplot(data = LOL.all.new) + aes(x = Dragondiff, y = golddiff) + geom_point(alpha = 0.3) +geom_smooth()+facet_grid(.~year,)+xlab("Dragon killed by Blue team") + ylab("Gold Difference between teams") + theme(axis.title.x = element_text(size = 15),axis.title.y = element_text(size = 15))
+
+ggplot(data = LOL.all.new) + aes(x = Barondiff, y = golddiff) + geom_point(alpha = 0.3) +geom_smooth()+facet_grid(.~year)+xlab("Baron killed by Blue team") + ylab("Gold Difference between teams") + theme(axis.title.x = element_text(size = 15),axis.title.y = element_text(size = 15))
+
+```
